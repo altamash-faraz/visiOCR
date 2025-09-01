@@ -2,8 +2,10 @@ services:
   - type: web
     name: visiocr
     env: python
-    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
-    startCommand: gunicorn visiOCR.wsgi:application
+    buildCommand: chmod +x render-build.sh && ./render-build.sh
+    startCommand: gunicorn visiOCR.wsgi:application --workers 1 --max-requests 1000 --max-requests-jitter 100
     envVars:
       - key: PYTHON_VERSION
         value: 3.10
+      - key: RENDER
+        value: true

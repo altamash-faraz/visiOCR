@@ -1,6 +1,12 @@
-import cv2
-import numpy as np
-import pytesseract
+# Conditional imports to reduce memory usage
+try:
+    import cv2
+    import numpy as np
+    import pytesseract
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+
 from datetime import datetime, timedelta
 from django.shortcuts import render
 from django.http import HttpResponse
@@ -11,13 +17,18 @@ from xhtml2pdf import pisa
 import qrcode
 import base64
 from io import BytesIO
-import mysql.connector
-from mysql.connector import Error
+import os
 from django.template.loader import render_to_string
 import logging
 import json
 
-pytesseract.pytesseract.tesseract_cmd = 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
+# Configure Tesseract path for production (Render) vs development
+if os.environ.get('RENDER'):
+    # On Render, tesseract should be in PATH
+    pytesseract.pytesseract.tesseract_cmd = 'tesseract'
+else:
+    # Local development path
+    pytesseract.pytesseract.tesseract_cmd = 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
 
 logging.basicConfig(level=logging.DEBUG)
 
