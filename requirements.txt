@@ -1,10 +1,11 @@
 django==5.0.6
 mysql-connector-python==8.0.27
 pytesseract==0.3.8
-opencv-python==4.5.3.56
+opencv-python==4.8.1.78
 xhtml2pdf==0.2.5
 qrcode[pil]==7.3.1
-Pillow==8.3.1
+Pillow==10.0.0
 gunicorn
 whitenoise
 dj-database-url
+psycopg2-binary
