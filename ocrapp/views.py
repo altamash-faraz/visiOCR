@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from django.shortcuts import render
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import re
 from django.template.loader import get_template
@@ -112,19 +112,25 @@ def extract_info(image):
                 
                 for config in configs:
                     text = pytesseract.image_to_string(processed_image, config=config)
-                    logging.debug(f"OCR attempt {i+1} extracted text: {text[:100]}...")
+                    logging.debug(f"OCR attempt {i+1} with config '{config}' extracted text: {text[:200]}...")
                     
                     name, birth_date, pan_number, aadhaar_number, gender = parse_text(text)
                     
+                    # Log what was parsed
+                    logging.debug(f"Parsed from OCR {i+1}: name='{name}', birth_date='{birth_date}', gender='{gender}', aadhaar='{aadhaar_number}', pan='{pan_number}'")
+                    
                     # Calculate confidence based on extracted data quality
                     confidence = calculate_extraction_confidence(name, birth_date, pan_number, aadhaar_number, gender)
+                    logging.debug(f"OCR attempt {i+1} confidence: {confidence:.2f}")
                     
                     if confidence > best_confidence:
                         best_confidence = confidence
                         best_result = (name, birth_date, pan_number, aadhaar_number, gender)
+                        logging.debug(f"New best result with confidence {confidence:.2f}")
                         
                     # If we get a good result, break early
                     if confidence > 0.7:
+                        logging.debug(f"High confidence result found, breaking early")
                         break
                         
                 if best_confidence > 0.7:
@@ -473,23 +479,33 @@ def process_image(image):
             logging.error("OCR extraction failed: %s", ocr_error)
             name = birth_date = pan_number = aadhaar_number = gender = ""
         
-        # Only use fallback if OCR completely fails (all fields empty)
-        if not name and not birth_date and not gender:
-            logging.warning("OCR failed completely, using fallback test data")
+        # Enhanced validation - check if we got meaningful data from OCR
+        has_meaningful_data = (
+            (name and len(name.strip()) > 2 and name.strip().lower() != "unknown") or
+            (aadhaar_number and len(aadhaar_number.strip()) > 10) or
+            (pan_number and len(pan_number.strip()) >= 10) or
+            (birth_date and len(birth_date.strip()) >= 8)
+        )
+        
+        logging.debug("OCR validation: has_meaningful_data=%s, name='%s', aadhaar='%s', pan='%s', birth_date='%s'", 
+                     has_meaningful_data, name, aadhaar_number, pan_number, birth_date)
+        
+        # Only use fallback if OCR completely fails OR returns clearly invalid data
+        if not has_meaningful_data:
+            logging.warning("OCR failed to extract meaningful data, using fallback test data")
             name = "John Doe"
             birth_date = "15/03/1985"
             gender = "Male" 
             pan_number = "ABCDE1234F"
             aadhaar_number = "1234-5678-9012"
-        elif name or birth_date or gender:
-            logging.info("OCR extracted some data successfully")
-            # Use extracted data, fill missing fields with defaults if needed
-            if not name:
-                name = "Unknown"
-            if not gender:
-                gender = "Not specified"
-            if not birth_date:
-                birth_date = "01/01/1990"
+        else:
+            logging.info("OCR extracted meaningful data successfully")
+            # Clean and validate extracted data
+            name = name.strip() if name else "Unknown"
+            gender = gender.strip() if gender else "Not specified"
+            birth_date = birth_date.strip() if birth_date else "01/01/1990"
+            pan_number = pan_number.strip() if pan_number else ""
+            aadhaar_number = aadhaar_number.strip() if aadhaar_number else ""
 
         try:
             # Create QR code data
