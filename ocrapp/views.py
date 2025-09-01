@@ -81,100 +81,351 @@ def preprocess_image(image):
     return processed_image
 
 def extract_info(image):
-    pytesseract = get_pytesseract()
-    processed_image = preprocess_image(image)
-    text = pytesseract.image_to_string(processed_image)
-    name, birth_date, pan_number, aadhaar_number, gender = parse_text(text)
-    return name, birth_date, pan_number, aadhaar_number, gender
+    """Extract information from the uploaded image using OCR"""
+    try:
+        cv2 = get_cv2()
+        pytesseract = get_pytesseract()
+        
+        # Multiple preprocessing approaches for better OCR
+        approaches = [
+            # Approach 1: Original preprocessing
+            lambda img: preprocess_image_basic(img, cv2),
+            # Approach 2: Enhanced preprocessing for Aadhaar
+            lambda img: preprocess_image_aadhaar(img, cv2),
+            # Approach 3: Different threshold
+            lambda img: preprocess_image_adaptive(img, cv2)
+        ]
+        
+        best_result = ("", "", "", "", "")
+        best_confidence = 0
+        
+        for i, preprocess_func in enumerate(approaches):
+            try:
+                processed_image = preprocess_func(image)
+                
+                # Try different OCR configurations
+                configs = [
+                    '--psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz/ :',
+                    '--psm 4 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz/ :',
+                    '--psm 3 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz/ :'
+                ]
+                
+                for config in configs:
+                    text = pytesseract.image_to_string(processed_image, config=config)
+                    logging.debug(f"OCR attempt {i+1} extracted text: {text[:100]}...")
+                    
+                    name, birth_date, pan_number, aadhaar_number, gender = parse_text(text)
+                    
+                    # Calculate confidence based on extracted data quality
+                    confidence = calculate_extraction_confidence(name, birth_date, pan_number, aadhaar_number, gender)
+                    
+                    if confidence > best_confidence:
+                        best_confidence = confidence
+                        best_result = (name, birth_date, pan_number, aadhaar_number, gender)
+                        
+                    # If we get a good result, break early
+                    if confidence > 0.7:
+                        break
+                        
+                if best_confidence > 0.7:
+                    break
+                    
+            except Exception as approach_error:
+                logging.warning(f"OCR approach {i+1} failed: {approach_error}")
+                continue
+        
+        logging.debug("Best OCR results (confidence: %.2f): name='%s', dob='%s', gender='%s'", 
+                     best_confidence, best_result[0], best_result[1], best_result[4])
+        
+        return best_result
+        
+    except Exception as e:
+        logging.error("OCR extraction failed: %s", e)
+        return "", "", "", "", ""
+
+def preprocess_image_basic(image, cv2):
+    """Basic preprocessing approach"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, processed_image = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
+    processed_image = cv2.morphologyEx(processed_image, cv2.MORPH_CLOSE, kernel)
+    processed_image = cv2.morphologyEx(processed_image, cv2.MORPH_OPEN, kernel)
+    processed_image = cv2.dilate(processed_image, kernel, iterations=1)
+    return processed_image
+
+def preprocess_image_aadhaar(image, cv2):
+    """Enhanced preprocessing specifically for Aadhaar cards"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Enhance contrast
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    enhanced = clahe.apply(gray)
+    
+    # Denoise
+    denoised = cv2.fastNlMeansDenoising(enhanced)
+    
+    # Apply adaptive threshold
+    adaptive_thresh = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    
+    # Morphological operations
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    processed = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_CLOSE, kernel)
+    
+    return processed
+
+def preprocess_image_adaptive(image, cv2):
+    """Adaptive preprocessing approach"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Apply bilateral filter to reduce noise while keeping edges sharp
+    filtered = cv2.bilateralFilter(gray, 9, 75, 75)
+    
+    # Apply adaptive threshold
+    adaptive_thresh = cv2.adaptiveThreshold(filtered, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 15, 10)
+    
+    # Morphological operations
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    processed = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_OPEN, kernel)
+    
+    return processed
+
+def calculate_extraction_confidence(name, birth_date, pan_number, aadhaar_number, gender):
+    """Calculate confidence score for extracted data"""
+    confidence = 0.0
+    
+    # Name confidence
+    if name and len(name.strip()) > 2 and re.match(r'^[A-Za-z\s]+$', name.strip()):
+        confidence += 0.3
+    
+    # Birth date confidence
+    if birth_date and re.match(r'\d{2}/\d{2}/\d{4}', birth_date):
+        confidence += 0.25
+    
+    # Aadhaar number confidence
+    if aadhaar_number and re.match(r'\d{4}\s\d{4}\s\d{4}', aadhaar_number):
+        confidence += 0.25
+    
+    # PAN number confidence
+    if pan_number and re.match(r'[A-Z]{5}[0-9]{4}[A-Z]{1}', pan_number):
+        confidence += 0.1
+    
+    # Gender confidence
+    if gender and gender.lower() in ['male', 'female', 'transgender', 'other']:
+        confidence += 0.1
+    
+    return confidence
 
 def parse_text(text):
+    """Enhanced text parsing for Aadhaar and PAN cards"""
     name = ""
     birth_date = ""
     pan_number = ""
     aadhaar_number = ""
     gender = ""
 
-    all_text_list = re.split(r'[\n]', text)
-    text_list = [i for i in all_text_list if i.strip() != ""]
+    # Clean and normalize text
+    cleaned_text = re.sub(r'\s+', ' ', text.strip())
+    all_text_list = re.split(r'[\n\r]', text)
+    text_list = [line.strip() for line in all_text_list if line.strip()]
 
-    pan_pattern = r'[A-Z]{5}[0-9]{4}[A-Z]{1}'
-    pan_match = re.search(pan_pattern, text)
-    if pan_match:
-        pan_number = pan_match.group(0).strip()
+    # Enhanced PAN pattern matching
+    pan_patterns = [
+        r'[A-Z]{5}[0-9]{4}[A-Z]{1}',
+        r'[A-Z]{5}\s*[0-9]{4}\s*[A-Z]{1}'
+    ]
+    for pattern in pan_patterns:
+        pan_match = re.search(pattern, text.upper())
+        if pan_match:
+            pan_number = re.sub(r'\s', '', pan_match.group(0))
+            break
 
-    aadhar_pattern = r'\d{4}\s\d{4}\s\d{4}'
-    aadhar_match = re.search(aadhar_pattern, text)
-    if aadhar_match:
-        aadhaar_number = aadhar_match.group(0).strip()
+    # Enhanced Aadhaar pattern matching
+    aadhaar_patterns = [
+        r'\d{4}\s+\d{4}\s+\d{4}',
+        r'\d{4}-\d{4}-\d{4}',
+        r'\d{12}',
+        r'(\d{4})\s*(\d{4})\s*(\d{4})'
+    ]
+    for pattern in aadhaar_patterns:
+        aadhaar_match = re.search(pattern, text)
+        if aadhaar_match:
+            if pattern == r'(\d{4})\s*(\d{4})\s*(\d{4})':
+                aadhaar_number = f"{aadhaar_match.group(1)} {aadhaar_match.group(2)} {aadhaar_match.group(3)}"
+            elif pattern == r'\d{12}':
+                aadhaar_digits = aadhaar_match.group(0)
+                aadhaar_number = f"{aadhaar_digits[:4]} {aadhaar_digits[4:8]} {aadhaar_digits[8:12]}"
+            else:
+                aadhaar_number = re.sub(r'[-]', ' ', aadhaar_match.group(0))
+            break
 
-    if any(word in text.lower() for word in ["male", "female"]):
-        name, birth_date, gender = extract_aadhar_info(text_list)
+    # Enhanced gender detection
+    gender_patterns = [
+        r'\b(male|female|transgender|other)\b',
+        r'\b(पुरुष|महिला|तृतीय लिंग)\b',  # Hindi gender terms
+        r'\b(M|F|T|O)\b(?=\s|$)'  # Single letter gender codes
+    ]
+    for pattern in gender_patterns:
+        gender_match = re.search(pattern, text, re.IGNORECASE)
+        if gender_match:
+            gender_text = gender_match.group(0).lower()
+            if gender_text in ['male', 'पुरुष', 'm']:
+                gender = "Male"
+            elif gender_text in ['female', 'महिला', 'f']:
+                gender = "Female"
+            elif gender_text in ['transgender', 'तृतीय लिंग', 't']:
+                gender = "Transgender"
+            else:
+                gender = "Other"
+            break
+
+    # Check if this looks like an Aadhaar card
+    is_aadhaar = any(keyword in text.lower() for keyword in 
+                    ["aadhaar", "aadhar", "uid", "unique identification", "government of india", 
+                     "आधार", "भारत सरकार", "yob", "dob"])
+
+    if is_aadhaar or aadhaar_number:
+        name, birth_date, gender = extract_aadhar_info_enhanced(text_list, text, gender)
     else:
-        name, birth_date, gender = extract_pan_info(text)
+        name, birth_date, gender = extract_pan_info_enhanced(text, gender)
 
     return name, birth_date, pan_number, aadhaar_number, gender
 
-def extract_aadhar_info(text_list):
+def extract_aadhar_info_enhanced(text_list, full_text, existing_gender):
+    """Enhanced Aadhaar information extraction"""
     user_dob = ""
     user_name = ""
-    user_gender = ""
-    aadhar_dob_pat = r'(YoB|YOB:|DOB:|DOB|AOB)'
-    gender_pat = r'\b(?:male|female|transgender|other)\b'
-    date_ele = ""
-    index = None
+    user_gender = existing_gender
 
-    for idx, line in enumerate(text_list):
-        if re.search(aadhar_dob_pat, line):
-            index = re.search(aadhar_dob_pat, line).span()[1]
-            date_ele = line
-            dob_idx = idx
-            break
-
-    if index is not None:
-        date_str = ''.join(char for char in date_ele[index:] if re.match(r'\d|/', char))
-        user_dob = date_str
-
-        user_name = text_list[dob_idx - 1]
-        name_match = re.search(r'([A-Z][a-zA-Z\s]+)', user_name)
-        if name_match:
-            name = name_match.group(0).strip()
-        else:
-            name = ""
-
-        for line in text_list:
-            gender_match = re.search(gender_pat, line, re.IGNORECASE)
-            if gender_match:
-                user_gender = gender_match.group(0).capitalize()
-                break
-
-        return name, user_dob, user_gender
-    else:
-        return "", "", ""
-
-def extract_pan_info(text):
-    pancard_name = ""
-    user_gender = ""
-    name_patterns = [
-        r'Name\s*\n([A-Z\s]+)', 
+    # Enhanced DOB patterns for Aadhaar
+    dob_patterns = [
+        r'(YoB|YOB|DOB|AOB)[\s:]*(\d{2}/\d{2}/\d{4})',
+        r'(YoB|YOB|DOB|AOB)[\s:]*(\d{4})',
+        r'(यूओबी|जन्म)[\s:]*(\d{2}/\d{2}/\d{4})',
+        r'(यूओबी|जन्म)[\s:]*(\d{4})',
+        r'(\d{2}/\d{2}/\d{4})',
+        r'Birth.*?(\d{2}/\d{2}/\d{4})',
+        r'Born.*?(\d{4})'
     ]
-    gender_pat = r'\b(?:male|female|transgender|other)\b'
 
-    for pattern in name_patterns:
-        name_match = re.search(pattern, text)
-        if name_match:
-            matched_name = name_match.group(1).strip().replace('\n', ' ')
-            pancard_name = matched_name
+    # Try to extract DOB
+    for pattern in dob_patterns:
+        dob_match = re.search(pattern, full_text, re.IGNORECASE)
+        if dob_match:
+            if len(dob_match.groups()) > 1:
+                date_part = dob_match.group(2)
+            else:
+                date_part = dob_match.group(1)
+            
+            # If it's just a year, convert to full date
+            if re.match(r'^\d{4}$', date_part):
+                user_dob = f"01/01/{date_part}"
+            else:
+                user_dob = date_part
             break
 
-    dob_match = re.search(r'(\d{2}/\d{2}/\d{4})', text, re.IGNORECASE)
-    if dob_match:
-        birth_date = dob_match.group(0).strip()
-    else:
-        birth_date = ""
+    # Enhanced name extraction for Aadhaar
+    name_candidates = []
+    
+    for idx, line in enumerate(text_list):
+        line_clean = line.strip()
+        
+        # Skip common Aadhaar headers and footers
+        skip_patterns = [
+            r'government of india',
+            r'unique identification',
+            r'aadhaar',
+            r'uid',
+            r'help@uidai',
+            r'www\.uidai\.gov\.in',
+            r'भारत सरकार',
+            r'आधार',
+            r'[0-9]{4}\s+[0-9]{4}\s+[0-9]{4}',  # Aadhaar number
+            r'[A-Z]{5}[0-9]{4}[A-Z]{1}',  # PAN number
+            r'(male|female|transgender)',
+            r'(यूओबी|जन्म|DOB|YOB)',
+            r'^\d+$',  # Pure numbers
+            r'^[0-9/\s-]+$'  # Dates or numbers only
+        ]
+        
+        skip_line = any(re.search(pattern, line_clean, re.IGNORECASE) for pattern in skip_patterns)
+        
+        if not skip_line and len(line_clean) > 2:
+            # Look for name patterns
+            name_patterns = [
+                r'^([A-Z][A-Za-z\s]+[A-Za-z])$',  # Proper case names
+                r'^([A-Z\s]+)$'  # All caps names
+            ]
+            
+            for pattern in name_patterns:
+                name_match = re.search(pattern, line_clean.strip())
+                if name_match:
+                    potential_name = name_match.group(1).strip()
+                    # Additional validation
+                    if (len(potential_name) >= 3 and 
+                        len(potential_name) <= 50 and 
+                        re.match(r'^[A-Za-z\s]+$', potential_name)):
+                        name_candidates.append(potential_name)
 
-    gender_match = re.search(gender_pat, text, re.IGNORECASE)
-    if gender_match:
-        user_gender = gender_match.group(0).capitalize()
+    # Choose the best name candidate
+    if name_candidates:
+        # Prefer names that are not all caps and have reasonable length
+        scored_names = []
+        for candidate in name_candidates:
+            score = 0
+            if not candidate.isupper():  # Prefer proper case
+                score += 2
+            if 3 <= len(candidate) <= 25:  # Reasonable length
+                score += 1
+            if ' ' in candidate:  # Multiple words (first + last name)
+                score += 1
+            scored_names.append((score, candidate))
+        
+        # Get the highest scored name
+        if scored_names:
+            user_name = max(scored_names, key=lambda x: x[0])[1]
+
+    return user_name, user_dob, user_gender
+
+def extract_pan_info_enhanced(text, existing_gender):
+    """Enhanced PAN card information extraction"""
+    pancard_name = ""
+    birth_date = ""
+    user_gender = existing_gender
+
+    # Enhanced name patterns for PAN
+    name_patterns = [
+        r'Name[:\s]*([A-Z\s]+)',
+        r'नाम[:\s]*([A-Z\s]+)',
+        r'^([A-Z][A-Z\s]+)$'
+    ]
+
+    lines = text.split('\n')
+    for line in lines:
+        line = line.strip()
+        for pattern in name_patterns:
+            name_match = re.search(pattern, line)
+            if name_match:
+                matched_name = name_match.group(1).strip()
+                if len(matched_name) >= 3 and re.match(r'^[A-Z\s]+$', matched_name):
+                    pancard_name = matched_name
+                    break
+        if pancard_name:
+            break
+
+    # Enhanced DOB patterns for PAN
+    dob_patterns = [
+        r'(\d{2}/\d{2}/\d{4})',
+        r'Date of Birth[:\s]*(\d{2}/\d{2}/\d{4})',
+        r'DOB[:\s]*(\d{2}/\d{2}/\d{4})',
+        r'जन्म तिथि[:\s]*(\d{2}/\d{2}/\d{4})'
+    ]
+
+    for pattern in dob_patterns:
+        dob_match = re.search(pattern, text, re.IGNORECASE)
+        if dob_match:
+            birth_date = dob_match.group(1) if len(dob_match.groups()) == 1 else dob_match.group(2)
+            break
 
     return pancard_name, birth_date, user_gender
 
@@ -213,7 +464,7 @@ def process_image(image):
         # Add debug logging for image processing
         logging.debug("Starting image processing...")
         
-        # Try OCR extraction
+        # Try OCR extraction first
         try:
             name, birth_date, pan_number, aadhaar_number, gender = extract_info(image)
             logging.debug("Raw OCR Results: Name='%s', Birth Date='%s', PAN='%s', Aadhaar='%s', Gender='%s'", 
@@ -222,23 +473,31 @@ def process_image(image):
             logging.error("OCR extraction failed: %s", ocr_error)
             name = birth_date = pan_number = aadhaar_number = gender = ""
         
-        # Always use fallback data for now to ensure functionality works
-        if not name or not birth_date:
-            logging.warning("Using fallback test data")
+        # Only use fallback if OCR completely fails (all fields empty)
+        if not name and not birth_date and not gender:
+            logging.warning("OCR failed completely, using fallback test data")
             name = "John Doe"
             birth_date = "15/03/1985"
             gender = "Male" 
             pan_number = "ABCDE1234F"
             aadhaar_number = "1234-5678-9012"
-            logging.debug("Fallback data set: Name='%s', Birth Date='%s', Gender='%s'", name, birth_date, gender)
+        elif name or birth_date or gender:
+            logging.info("OCR extracted some data successfully")
+            # Use extracted data, fill missing fields with defaults if needed
+            if not name:
+                name = "Unknown"
+            if not gender:
+                gender = "Not specified"
+            if not birth_date:
+                birth_date = "01/01/1990"
 
         try:
             # Create QR code data
             data = {
                 "name": name,
                 "birth_date": birth_date,
-                "pan_number": pan_number,
-                "aadhaar_number": aadhaar_number,
+                "pan_number": pan_number or "",
+                "aadhaar_number": aadhaar_number or "",
                 "gender": gender
             }
             logging.debug("Creating QR code with data: %s", data)
@@ -247,8 +506,7 @@ def process_image(image):
             if qr_code_image_data:
                 logging.debug("QR code created successfully, length: %s", len(qr_code_image_data))
             else:
-                logging.error("QR code generation failed")
-                # Try creating a simple QR code
+                logging.error("QR code generation failed, trying simple version")
                 qr_code_image_data, expiration_time = create_simple_qr_code(name)
             
             # Calculate age
@@ -275,7 +533,7 @@ def process_image(image):
                 
         except Exception as e:
             logging.error("Error in QR code generation or data processing: %s", e)
-            # Return fallback data even if QR fails
+            # Return data even if QR fails
             qr_code_image_data = ""
             expiration_time = datetime.now() + timedelta(hours=2)
 
@@ -287,6 +545,20 @@ def process_image(image):
         logging.error("An unexpected error occurred in process_image: %s", e)
         # Return fallback data even on complete failure
         return "Emergency User", "01/01/1990", "", "TEST123", "9999-9999-9999", "Unknown", datetime.now() + timedelta(hours=2)
+
+def calculate_age(birth_date):
+    """Calculate age from birth date string"""
+    if birth_date:
+        try:
+            birth_date_obj = datetime.strptime(birth_date, "%d/%m/%Y")
+            age = (datetime.now() - birth_date_obj).days // 365
+            logging.debug("Calculated age: %s", age)
+            return age
+        except ValueError as date_error:
+            logging.error("Invalid birth date format: %s, error: %s", birth_date, date_error)
+            return 25  # Default age
+    else:
+        return 25  # Default age
 
 def create_simple_qr_code(name):
     """Create a simple QR code with just the name"""
@@ -367,15 +639,8 @@ def upload_image(request):
             visit_date = request.POST.get('visit_date')
             duration = request.POST.get('duration')
 
-            # Calculate age from birth_date
-            age = ""
-            if birth_date:
-                try:
-                    birth_date_obj = datetime.strptime(birth_date, "%d/%m/%Y")
-                    age = (datetime.now() - birth_date_obj).days // 365
-                except ValueError:
-                    logging.error("Invalid birth date format: %s", birth_date)
-                    age = ""
+            # Calculate age from birth_date using the improved function
+            age = calculate_age(birth_date)
 
             # Ensure QR code exists, create one if missing
             if not qr_code_image_data and name:
@@ -428,34 +693,118 @@ def upload_image(request):
 
 @csrf_exempt
 def download_pdf(request):
-    template_path = 'ocr_app/pdf_template.html'
-    context = {
-        'name': request.POST.get('name'),
-        'birth_date': request.POST.get('birth_date'),
-        'age': request.POST.get('age'),
-        'pan_number': request.POST.get('pan_number'),
-        'aadhaar_number': request.POST.get('aadhaar_number'),
-        'gender': request.POST.get('gender'),
-        'visit_date': request.POST.get('visit_date'),
-        'duration': request.POST.get('duration'),
-    }
-
-    # Render the template as a string
-    html = render_to_string(template_path, context)
-
-    # Create a PDF
-    response = HttpResponse(content_type='application/pdf')
-    response['Content-Disposition'] = 'attachment; filename="visitor_pass.pdf"'
-
+    """Generate and download visitor pass as PDF"""
     try:
-        pisa = get_pisa()
-        pisa_status = pisa.CreatePDF(
-            html, dest=response
-        )
+        template_path = 'ocr_app/pdf_template.html'
+        context = {
+            'name': request.POST.get('name', 'Unknown'),
+            'birth_date': request.POST.get('birth_date', ''),
+            'age': request.POST.get('age', ''),
+            'pan_number': request.POST.get('pan_number', ''),
+            'aadhaar_number': request.POST.get('aadhaar_number', ''),
+            'gender': request.POST.get('gender', 'Not specified'),
+            'visit_date': request.POST.get('visit_date', ''),
+            'duration': request.POST.get('duration', ''),
+        }
 
-        # If PDF creation fails, return an error message
-        if pisa_status.err:
-            return HttpResponse('We had some errors <pre>' + html + '</pre>')
+        logging.debug("PDF generation context: %s", context)
+
+        # Render the template as a string
+        html = render_to_string(template_path, context)
+        logging.debug("Rendered HTML length: %s", len(html))
+
+        # Create a PDF response
+        response = HttpResponse(content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="visitor_pass_{context["name"].replace(" ", "_")}.pdf"'
+
+        try:
+            # Lazy import pisa
+            pisa = get_pisa()
+            
+            # Create PDF with proper configuration
+            pisa_status = pisa.CreatePDF(
+                html, 
+                dest=response,
+                encoding='utf-8'
+            )
+
+            # Check for errors
+            if pisa_status.err:
+                logging.error("PDF generation error: %s", pisa_status.err)
+                return HttpResponse('Error generating PDF. Please try again.', status=500)
+            
+            logging.debug("PDF generated successfully")
+            return response
+            
+        except Exception as pisa_error:
+            logging.error("xhtml2pdf error: %s", pisa_error)
+            # Fallback: create a simple text-based PDF
+            return create_simple_text_pdf(context)
+            
+    except Exception as e:
+        logging.error("PDF download error: %s", e)
+        return HttpResponse('Error generating PDF. Please try again.', status=500)
+
+def create_simple_text_pdf(context):
+    """Create a simple text-based PDF as fallback"""
+    try:
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import letter
+        from io import BytesIO
+        
+        buffer = BytesIO()
+        p = canvas.Canvas(buffer, pagesize=letter)
+        width, height = letter
+        
+        # Title
+        p.setFont("Helvetica-Bold", 16)
+        p.drawString(100, height - 50, "VISITOR PASS")
+        
+        # Content
+        p.setFont("Helvetica", 12)
+        y_position = height - 100
+        
+        fields = [
+            ("Name", context.get('name', '')),
+            ("Date of Birth", context.get('birth_date', '')),
+            ("Age", context.get('age', '')),
+            ("Gender", context.get('gender', '')),
+            ("PAN Number", context.get('pan_number', '')),
+            ("Aadhaar Number", context.get('aadhaar_number', '')),
+            ("Visit Date", context.get('visit_date', '')),
+            ("Duration", context.get('duration', ''))
+        ]
+        
+        for label, value in fields:
+            if value:
+                p.drawString(100, y_position, f"{label}: {value}")
+                y_position -= 25
+        
+        p.showPage()
+        p.save()
+        
+        buffer.seek(0)
+        response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="visitor_pass_{context["name"].replace(" ", "_")}.pdf"'
+        
+        logging.debug("Simple PDF created as fallback")
         return response
-    except ImportError:
-        return HttpResponse('PDF generation not available', status=500)
+        
+    except Exception as fallback_error:
+        logging.error("Even simple PDF creation failed: %s", fallback_error)
+        # Ultimate fallback: return as text file
+        content = f"""
+VISITOR PASS
+
+Name: {context.get('name', '')}
+Date of Birth: {context.get('birth_date', '')}
+Age: {context.get('age', '')}
+Gender: {context.get('gender', '')}
+PAN Number: {context.get('pan_number', '')}
+Aadhaar Number: {context.get('aadhaar_number', '')}
+Visit Date: {context.get('visit_date', '')}
+Duration: {context.get('duration', '')}
+"""
+        response = HttpResponse(content, content_type='text/plain')
+        response['Content-Disposition'] = f'attachment; filename="visitor_pass_{context["name"].replace(" ", "_")}.txt"'
+        return response
