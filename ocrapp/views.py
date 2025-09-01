@@ -4,7 +4,6 @@ from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 import re
 from django.template.loader import get_template
-from xhtml2pdf import pisa
 import qrcode
 import base64
 from io import BytesIO
@@ -18,6 +17,7 @@ from .models import ExtractedData
 cv2 = None
 np = None
 pytesseract = None
+pisa = None
 
 def get_cv2():
     """Lazy import of cv2"""
@@ -56,6 +56,17 @@ def get_pytesseract():
         except ImportError:
             raise ImportError("pytesseract not available")
     return pytesseract
+
+def get_pisa():
+    """Lazy import of xhtml2pdf pisa"""
+    global pisa
+    if pisa is None:
+        try:
+            from xhtml2pdf import pisa as pisa_module
+            pisa = pisa_module
+        except ImportError:
+            raise ImportError("xhtml2pdf not available")
+    return pisa
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -324,11 +335,15 @@ def download_pdf(request):
     response = HttpResponse(content_type='application/pdf')
     response['Content-Disposition'] = 'attachment; filename="visitor_pass.pdf"'
 
-    pisa_status = pisa.CreatePDF(
-        html, dest=response
-    )
+    try:
+        pisa = get_pisa()
+        pisa_status = pisa.CreatePDF(
+            html, dest=response
+        )
 
-    # If PDF creation fails, return an error message
-    if pisa_status.err:
-        return HttpResponse('We had some errors <pre>' + html + '</pre>')
-    return response
+        # If PDF creation fails, return an error message
+        if pisa_status.err:
+            return HttpResponse('We had some errors <pre>' + html + '</pre>')
+        return response
+    except ImportError:
+        return HttpResponse('PDF generation not available', status=500)
