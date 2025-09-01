@@ -482,13 +482,19 @@ def process_image(image):
         # Enhanced validation - check if we got meaningful data from OCR
         has_meaningful_data = (
             (name and len(name.strip()) > 2 and name.strip().lower() != "unknown") or
-            (aadhaar_number and len(aadhaar_number.strip()) > 10) or
-            (pan_number and len(pan_number.strip()) >= 10) or
-            (birth_date and len(birth_date.strip()) >= 8)
+            (aadhaar_number and len(aadhaar_number.strip()) > 5) or
+            (pan_number and len(pan_number.strip()) >= 5) or
+            (birth_date and len(birth_date.strip()) >= 4) or
+            (gender and len(gender.strip()) > 1)
         )
         
-        logging.debug("OCR validation: has_meaningful_data=%s, name='%s', aadhaar='%s', pan='%s', birth_date='%s'", 
-                     has_meaningful_data, name, aadhaar_number, pan_number, birth_date)
+        logging.debug("OCR validation: has_meaningful_data=%s, name='%s', aadhaar='%s', pan='%s', birth_date='%s', gender='%s'", 
+                     has_meaningful_data, name, aadhaar_number, pan_number, birth_date, gender)
+        
+        # TEMPORARY DEBUG: Show what OCR extracted even if we use fallback
+        if name or birth_date or gender or aadhaar_number or pan_number:
+            logging.warning("OCR EXTRACTED DATA: name='%s', birth_date='%s', gender='%s', aadhaar='%s', pan='%s'", 
+                           name, birth_date, gender, aadhaar_number, pan_number)
         
         # Only use fallback if OCR completely fails OR returns clearly invalid data
         if not has_meaningful_data:
