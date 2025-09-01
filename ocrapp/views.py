@@ -21,6 +21,7 @@ import os
 from django.template.loader import render_to_string
 import logging
 import json
+from .models import ExtractedData   
 
 # Configure Tesseract path for production (Render) vs development
 if os.environ.get('RENDER'):
@@ -137,70 +138,35 @@ def extract_pan_info(text):
 
     return pancard_name, birth_date, user_gender
 
-def create_connection():
+def save_extracted_data(name, birth_date, pan_number, aadhaar_number, gender, qr_code_image_data, age):
+    """Save extracted data using Django ORM"""
     try:
-        connection = mysql.connector.connect(
-            host='localhost',
-            database='VISIOCR',
-            user='root',
-            password='altamash'
+        # Parse birth_date if it's a string
+        parsed_birth_date = None
+        if birth_date:
+            try:
+                parsed_birth_date = datetime.strptime(birth_date, "%d/%m/%Y").date()
+            except ValueError:
+                logging.error("Invalid birth date format: %s", birth_date)
+        
+        # Create and save the record
+        extracted_data = ExtractedData.objects.create(
+            name=name or None,
+            birth_date=parsed_birth_date,
+            pan_number=pan_number or None,
+            aadhaar_number=aadhaar_number or None,
+            gender=gender or None,
+            qr_code_image=qr_code_image_data,
+            age=age
         )
-        return connection
-    except Error as e:
-        logging.error("Error while connecting to MySQL: %s", e)
+        
+        logging.debug("Record saved successfully: Name=%s, Birth Date=%s, PAN=%s, Aadhaar=%s, Gender=%s", 
+                     name, birth_date, pan_number, aadhaar_number, gender)
+        return extracted_data
+        
+    except Exception as e:
+        logging.error("Error while saving data: %s", e)
         return None
-
-def create_table(connection):
-    try:
-        if connection.is_connected():
-            cursor = connection.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS extracted_data (
-                    id INT AUTO_INCREMENT PRIMARY KEY, 
-                    name VARCHAR(255), 
-                    birth_date DATE, 
-                    pan_number VARCHAR(10), 
-                    aadhaar_number VARCHAR(70), 
-                    age INT, 
-                    gender VARCHAR(10), 
-                    qr_code_image LONGBLOB
-                )
-            """)
-            connection.commit()
-            logging.debug("Table 'extracted_data' created successfully")
-            cursor.close()
-    except Error as e:
-        logging.error("Error while creating table: %s", e)
-
-def insert_data(connection, name, birth_date, pan_number, aadhaar_number, gender, qr_code_image_data, age):
-    try:
-        if connection.is_connected():
-            cursor = connection.cursor()
-            sanitized_name = name.replace("'", "''")
-            if birth_date:
-                birth_date = datetime.strptime(birth_date, "%d/%m/%Y").strftime("%Y-%m-%d")
-            else:
-                birth_date = None
-
-            query = """
-                INSERT INTO extracted_data (name, birth_date, pan_number, aadhaar_number, gender, qr_code_image, age)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """
-            values = (
-                sanitized_name,
-                birth_date,
-                pan_number if pan_number else None,
-                aadhaar_number if aadhaar_number else None,
-                gender if gender else None,
-                qr_code_image_data if qr_code_image_data else None,
-                age
-            )
-            cursor.execute(query, values)
-            connection.commit()
-            logging.debug("Record inserted successfully: Name=%s, Birth Date=%s, PAN Number=%s, Aadhaar Number=%s, Gender=%s", sanitized_name, birth_date, pan_number, aadhaar_number, gender)
-            cursor.close()
-    except Error as e:
-        logging.error("Error while inserting data into table: %s", e)
 
 def process_image(image):
     try:
@@ -211,13 +177,8 @@ def process_image(image):
             logging.error("Failed to extract valid name or birth date from the image.")
             return "", "", "", "", "", "", None
 
-        connection = create_connection()
-        if not connection:
-            logging.error("Failed to establish a database connection.")
-            return name, birth_date, "", pan_number, aadhaar_number, gender, None
-
         try:
-            create_table(connection)
+            # Create QR code data
             data = {
                 "name": name,
                 "birth_date": birth_date,
@@ -226,16 +187,20 @@ def process_image(image):
                 "gender": gender
             }
             qr_code_image_data, expiration_time = create_qr_code(data)
+            
+            # Calculate age
             birth_date_obj = datetime.strptime(birth_date, "%d/%m/%Y")
             age = (datetime.now() - birth_date_obj).days // 365
-            insert_data(connection, name, birth_date, pan_number, aadhaar_number, gender, qr_code_image_data, age)
+            
+            # Save to database using Django ORM
+            saved_record = save_extracted_data(name, birth_date, pan_number, aadhaar_number, gender, qr_code_image_data, age)
+            
+            if not saved_record:
+                logging.error("Failed to save data to database")
+                
         except Exception as e:
             logging.error("Error processing image: %s", e)
             return name, birth_date, "", pan_number, aadhaar_number, gender, None
-        finally:
-            if connection and connection.is_connected():
-                connection.close()
-                logging.debug("MySQL connection is closed")
 
         return name, birth_date, qr_code_image_data, pan_number, aadhaar_number, gender, expiration_time
     except Exception as e:
