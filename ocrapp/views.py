@@ -1,12 +1,3 @@
-# Conditional imports to reduce memory usage
-try:
-    import cv2
-    import numpy as np
-    import pytesseract
-    CV2_AVAILABLE = True
-except ImportError:
-    CV2_AVAILABLE = False
-
 from datetime import datetime, timedelta
 from django.shortcuts import render
 from django.http import HttpResponse
@@ -23,25 +14,63 @@ import logging
 import json
 from .models import ExtractedData   
 
-# Configure Tesseract path for production (Render) vs development
-if os.environ.get('RENDER'):
-    # On Render, tesseract should be in PATH
-    pytesseract.pytesseract.tesseract_cmd = 'tesseract'
-else:
-    # Local development path
-    pytesseract.pytesseract.tesseract_cmd = 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
+# Global variables for lazy imports
+cv2 = None
+np = None
+pytesseract = None
+
+def get_cv2():
+    """Lazy import of cv2"""
+    global cv2
+    if cv2 is None:
+        try:
+            import cv2 as cv2_module
+            cv2 = cv2_module
+        except ImportError:
+            raise ImportError("OpenCV not available")
+    return cv2
+
+def get_numpy():
+    """Lazy import of numpy"""
+    global np
+    if np is None:
+        try:
+            import numpy as np_module
+            np = np_module
+        except ImportError:
+            raise ImportError("NumPy not available")
+    return np
+
+def get_pytesseract():
+    """Lazy import of pytesseract"""
+    global pytesseract
+    if pytesseract is None:
+        try:
+            import pytesseract as pytesseract_module
+            pytesseract = pytesseract_module
+            # Configure Tesseract path
+            if os.environ.get('RENDER'):
+                pytesseract.pytesseract.tesseract_cmd = 'tesseract'
+            else:
+                pytesseract.pytesseract.tesseract_cmd = 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
+        except ImportError:
+            raise ImportError("pytesseract not available")
+    return pytesseract
 
 logging.basicConfig(level=logging.DEBUG)
 
 def home(request):
+    """Simple home view that doesn't require heavy libraries"""
     return render(request, 'ocr_app/home.html')
 
 def preprocess_image(image):
+    cv2 = get_cv2()
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     processed_image = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
     return processed_image
 
 def extract_info(image):
+    pytesseract = get_pytesseract()
     processed_image = preprocess_image(image)
     text = pytesseract.image_to_string(processed_image)
     name, birth_date, pan_number, aadhaar_number, gender = parse_text(text)
@@ -232,21 +261,32 @@ def create_qr_code(data, expiration_hours=2):
 @csrf_exempt
 def upload_image(request):
     if request.method == 'POST' and request.FILES.get('image'):
-        image_file = request.FILES['image']
-        image_data = np.frombuffer(image_file.read(), np.uint8)
-        image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+        try:
+            # Lazy import of required libraries
+            np = get_numpy()
+            cv2 = get_cv2()
+            
+            image_file = request.FILES['image']
+            image_data = np.frombuffer(image_file.read(), np.uint8)
+            image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
 
-        name, birth_date, qr_code_image_data, pan_number, aadhaar_number, gender, expiration_time = process_image(image)
+            name, birth_date, qr_code_image_data, pan_number, aadhaar_number, gender, expiration_time = process_image(image)
 
-        visit_date = request.POST.get('visit_date')
-        duration = request.POST.get('duration')
+            visit_date = request.POST.get('visit_date')
+            duration = request.POST.get('duration')
 
-        # Calculate age from birth_date
-        if birth_date:
-            birth_date_obj = datetime.strptime(birth_date, "%d/%m/%Y")
-            age = (datetime.now() - birth_date_obj).days // 365
-        else:
-            age = ""
+            # Calculate age from birth_date
+            if birth_date:
+                birth_date_obj = datetime.strptime(birth_date, "%d/%m/%Y")
+                age = (datetime.now() - birth_date_obj).days // 365
+            else:
+                age = ""
+        except ImportError as e:
+            logging.error("Required libraries not available: %s", e)
+            return HttpResponse("OCR functionality not available", status=500)
+        except Exception as e:
+            logging.error("Error processing image: %s", e)
+            return HttpResponse("Error processing image", status=500)
 
         context = {
             'name': name,
