@@ -4,8 +4,6 @@
 
 ![VisiOCR Logo](https://img.shields.io/badge/VisiOCR-Smart%20OCR-blue?style=for-the-badge&logo=eye&logoColor=white)
 
-**🚀 Live Demo:** [https://visiocr-y4rx.onrender.com](https://visiocr-y4rx.onrender.com)
-
 [![Django](https://img.shields.io/badge/Django-5.0.6-green?style=flat-square&logo=django)](https://djangoproject.com/)
 [![Python](https://img.shields.io/badge/Python-3.10-blue?style=flat-square&logo=python)](https://python.org/)
 [![Tesseract](https://img.shields.io/badge/Tesseract-OCR-orange?style=flat-square)](https://github.com/tesseract-ocr/tesseract)
